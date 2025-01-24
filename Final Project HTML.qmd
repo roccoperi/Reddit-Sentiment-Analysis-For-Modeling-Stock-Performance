@@ -1,0 +1,284 @@
+---
+title: "Can Sentiment Analysis Predict Stock Performance?"
+author: "Rocco Peri"
+format: 
+  html:
+    embed-resources: true
+    theme: lux
+---
+
+## Introduction
+
+For centuries, there have been trillions of dollars of capital and millions of hours of labor to decipher whether a certain stock will move up and down. Whether it be technical analysis, fundamental analysis, financial theory, or mere speculation, people have devoted their lives towards figuring out how a stock is going to perform on a given day. For my project, I decided to take a crack at answering this question, but through the utilization of R methods that I have learned throughout this course. These methods I will use throughout my project include web scraping, sentiment analysis through three different lexicon packages, and visualizations. I hope that by the end of this document, the reader will have a thorough understanding of how I gathered my data, manipulated the data through the use of tidyverse functions and the sentiment packages, and reached my conclusion about the efficacy of sentiment analysis of online text data in predicting stock outcomes.
+
+My research question is: **Does online sentiment of a specific company’s stock accurately reflect how that stock performs on a given day?**
+
+In this project, I will be gathering reddit comments using the pushpull API service on three different individual stocks (Apple, Tesla, JP Morgan) over a span of a year and attaching sentiment data to the comments using the three sentiment packages in *tidytext*. Then, I will be manipulating the data to determine whether the comments for an individual day on a specific stock is positive or negative, and from that, I will attach stock price % change data and see whether a positive or negative sentiment is reflected in a positive and negative return. Through this methodology, I can see whether different sentiment analysis packages make more accurate predictions than the others in terms of predicting stock performance.
+
+# Methods and Data Collection
+
+## Pushpull API
+
+Pushpull API is an online service that can retrieve content that users submit to reddit. Prior to choosing this API as the way in which I can get my text data, Professor Tadmon suggested using pushshift API as the way to access online reddit data. However, as the pushshift API team partnered with Reddit, the API can only be accessed by Reddit moderators. Thus, Pushpull API was created such that average person can access archived reddit data. Below is my code that utilized the pushpull API to extract comment data of the comments mentioning \$AAPL.
+
+```{r}
+#| label: Web Scraping Function
+#| eval: FALSE
+#| echo: TRUE
+
+library(httr)
+library(jsonlite)
+
+start_time <- 1672549200
+end_time <- start_time + 86400
+
+#Getting the tibble for a random assortment 100 reddit comments mentioning $AAPL 
+#over the course of a year per each day
+tibble_list_aapl <- list()
+for (i in 1:365) {
+  response <- GET("https://api.pullpush.io/reddit/search/comment/", 
+                  query = list(q = "$AAPL", 
+                               after = start_time + ((i-1) * 86400), 
+                               before = (start_time + (i * 86400))))
+  response_content <- content(response, "text")
+  parsed <- parse_json(response_content)
+  tibble_list_aapl[[i]] <- tibble(col1 = parsed$data) |> 
+    unnest_wider(col1) |>
+    select(body, created_utc)
+}
+#Create a tibble with the text and the time the comment was created
+final_df_aapl = bind_rows(tibble_list_aapl)
+
+
+#Adding a day variable for each observation
+for (i in 1:30343) {
+  final_df_aapl <- final_df_aapl |>
+    mutate(day = if_else(created_utc >= start_time & created_utc < end_time, i, day))
+  start_time <- end_time
+  end_time <- end_time + 86400
+}
+```
+
+To start, I imported the relevant packages such as jsonlite and httr such that I can access the pushpull API. These packages give me access to the GET, content, and parse_json functions, which allow me to extract the text from the pushpull API in a manner that allows me to work with the data efficiently.
+
+The *tibble_list_aapl* is used for purposes that I will outline later.
+
+I initialized a start time of 1672549200 and an end time of 1672549200 + 86400. The former is the time, in epoch, of January 1, 2023 at 12:00 AM, and the latter is the amount of seconds in a day. In the parameters of the API, you can specify and after and before time (with the unit of measurement being in epoch), and by using this start time and the number of seconds in a day, you can specify that you want the 100 comments mentioning a certain search term (in this case it is the stock ticker symbol of the three companies) per day.
+
+The forloop gets the response from the pushpull API, searches by stock ticker symbol (in the above case it is Apple's ticker AAPL) on a January 1, 2023, and the content function extracts the text from what is outputted from the get function. Then, the data is parsed such that the data can be worked with properly, and then a tibble is made with the columns *body* indicating the comment and *created_utc* which indicates the time in which the comment was made. Finally, the tibble is appended to the *tibble_list_aapl*, and the for loop makes it so that the API gets a tibble for each of the 365 days in the year 2023 and appends each tibble to the *tibble_list_aapl*. As the for loop goes through, it updates the before and after values by 86400 such that the API retrieves comment data for each individual day of the year. For example, for January 1, 2023, the after value is 1672549200 and the before value is 1672635600, but for January 2, 2023, the after value becomes 1672635600 and the new before value becomes 1672635600 + 86400 = 1672722000.
+
+Then, I used the bind_rows function of the tibble list to create a singular tibble with all of the Reddit comments on each day of the 2023 year mentioning \$AAPL in one neat format.
+
+Finally, the for loop at the bottom takes the tibble containing all of the comments and, using the start_time and the end_time variables, determines which day of the 365 days the comment was made on. The range of the for loop is 1 to the number of observations in the AAPL tibble which was 30337 observations. The final product is a tibble containing the variables body (text of the comments), created_utc (when the comment was posted), and day (indicating which day of the year it was).
+
+I used the pushpull API on the three companies in the manner outlined above, so at the end, I have three tibbles containing about 85000 Reddit comments mentioning their respective stocks. These tibbles are submitted with this project on Canvas as AAPL.csv, TSLA.csv, and JPM.csv
+
+## Sentiment Retrieval + Attachment
+
+I utilized the *tidytext* package to import the NRC, Bing, and AFINN sentiment packages in the manner outlined below.
+
+```{r}
+#| label: Sentiment Retrieval 
+#| eval: FALSE
+#| echo: TRUE
+
+library(tidytext)
+nrc <- get_sentiments("nrc")
+bing <- get_sentiments("bing")
+afinn <- get_sentiments("afinn")
+```
+
+This script gave me 3 tibbles containing the three sentiment packages. With these packages, I can now attach sentiment data to each of the words in the comments. The sentiment packages each have their different ways of providing sentiment data.
+
+-   nrc - provides positive/negative while also including emotion data such as disgust, joy, etc.
+
+-   bing - provides only positive/neutral/negative
+
+-   afinn - provides a number on the scale of -5 to 5, with -5 being the most negative and 5 being the most positive
+
+Using these sentiment packages, I can now perform my sentiment analysis. My function for attaching sentiment data to the Reddit comments is below.
+
+```{r}
+#| label: Sentiment Attachment Function - NRC
+#| eval: FALSE
+#| echo: TRUE
+
+sentiment <- function(tibble) {
+  sentiment_analysis <- tibble |>
+    unnest_tokens(input = "body", output = "word", token = "words") |>
+    inner_join(nrc, by = "word", relationship = "many-to-many") |>
+    filter(sentiment %in% c("positive", "negative")) |>
+    mutate(sentiment_score = ifelse(sentiment == "positive", 1, -1)) |>
+    group_by(day) |>
+    summarize(sentiment_differential = sum(sentiment_score))
+  return(sentiment_analysis)
+}
+```
+
+This function tokenizes the tibble by the column "body", outputting the column "word", and tokenizing by individual words. Then, it inner joins the tibble with the sentiment package by the new "word" column, outputting a tibble containing each word that has a sentiment attached to it. I had to include the "many-to-many" relationship for the code to work properly. Furthermore, I filtered only the words that had a positive or negative sentiment to them and created a sentiment score using an ifelse statement, assigning 1 to the positive words and -1 to the negative words. Finally, I grouped by each day in the day column and created a sentiment_differential, which is the sum of all of the 1s and -1s on each word on a given day. The output of this function with AAPL as an example is below.
+
+```{r}
+#| eval: TRUE
+#| echo: FALSE
+#| message: FALSE 
+#| warning: FALSE
+library(knitr)
+library(here)
+sentiment_aapl = read.csv(here("Sentiment AAPL.csv"))
+kable(head(sentiment_aapl), caption = "Sample Sentiment Score Table NRC - AAPL")
+```
+
+## Stock Data + Final Matched Proportion
+
+To retrieve my stock data, I used investing.com and used their historical data tab to download a csv containing a years worth of stock data on Apple, Tesla, and JP Morgan. This data initially had the date, the price, the high and low, the open price and closing price, and the % change over the day. I only care about the date and the percent change, as a positive percent change indicates a positive return and a negative percent change indicates a negative return. So, I deleted everything else that was not the date or the % change, and then I had to change the format of the date to MM/DD/YYYY so it could work with my left_join function with the sentiment data. The output of this data wrangling is below with Apple as the example.
+
+```{r}
+#| eval: TRUE
+#| echo: FALSE
+#| message: FALSE 
+#| warning: FALSE
+library(knitr)
+library(here)
+sentiment_aapl = read.csv(here("Apple Stock Price History.csv"))
+kable(head(sentiment_aapl), caption = "Apple Stock Price History")
+```
+
+Using the stock data and the sentiment data, I was finally able to determine whether sentiment could accurately predict stock performance. The code that allowed me to do so is below, with Apple as the company and nrc as the sentiment package.
+
+```{r}
+#| label: Matched Code with AAPL and nrc 
+#| eval: FALSE
+#| echo: TRUE
+
+AAPL_stock_data <- read.csv(here("Apple Stock Price History.csv"))
+
+AAPL_sentiment <- AAPL_sentiment |>
+  mutate(day = format(as.Date(day - 1, origin = "2023-1-1"), "%m/%d/%Y")) |>
+  mutate(day = as.character(day))
+  
+
+final_AAPL_df <- AAPL_stock_data |>
+  left_join(AAPL_sentiment, by = "day") |>
+  mutate(inc_dec = ifelse(Change.. > 0, 1, 0)) |>
+  mutate(pos_neg_sentiment = ifelse(sentiment_differential > 0, 1, 0)) |>
+  mutate(matched = ifelse(inc_dec == pos_neg_sentiment, 1, 0)) 
+
+sum(final_AAPL_df$matched)/250
+```
+
+First, I imported the cleaned version of Apple's stock price history. Then, I reformatted the date on the APPL sentiment tibble such that it matched the MM/DD/YYYY format in the stock price history. Then, I created a final tibble by left_joining the Apple Stock Data with the Apple Sentiment Data by "day". The output is a tibble that only contains the days that the Apple stock was trading and the sentiment differential associated with those days. Then, I used the mutate function to create the variables inc_dec, which indicates whether the percent change of the stock price was positive or negative, pos_neg_sentiment, which indicates whether the sentiment differential on a given day was positive or negative, and matched, which has the value of 1 indicating if the positive or negative sentiment accurately predicted the positive or negative return of the stock.
+
+Finally, by taking the sum of the matched column and dividing it by the number of trading days, I can determine the proportion of days whether the sentiment accurately predicted stock performance.
+
+I had three different companies of study (AAPL, TSLA, and JPM and three different sentiment packages (nrc, Bing, AFINN), so the process I outlined throughout the paper, I had to do 9 times, with each time representing a specific combination of a company with a sentiment package. Therefore, at the end of my research, I got 9 different matched scores with each combination of company with sentiment. Below is the code of how I made the final matched tibble that I will be interpreting in the "Results" section.
+
+```{r}
+#| label: Master Tibble of All Matched Proportions
+#| eval: FALSE
+#| echo: TRUE
+
+matched_AAPL <- tibble(sentiment = c("nrc", "bing", "AFINN"), AAPL = 
+                        c(0.556, .52, .552))
+
+matched_TSLA <- tibble(sentiment = c("nrc", "bing", "AFINN"), TSLA = 
+                             c(.516, .564, .556))
+
+matched_JPM <- tibble(sentiment = c("nrc", "bing", "AFINN"), JPM = 
+                             c(.56, .54, .548))
+
+progress_tibble <- left_join(matched_AAPL, matched_TSLA)
+
+master_tibble <- left_join(progress_tibble, matched_JPM)
+
+write.csv(master_tibble, file = "Matched Scores per Company with 3 Sentiment Packages.csv")
+```
+
+# Results
+
+## Matched Tibble
+
+```{r}
+#| eval: TRUE
+#| echo: FALSE
+#| message: FALSE 
+#| warning: FALSE
+library(knitr)
+library(here)
+master.tibble = read.csv(here("Matched Scores per Company with 3 Sentiment Packages.csv"))
+kable(head(master.tibble), caption = "Matched Proportion Tibble")
+```
+
+Here is a tibble representing all of the matched proportion scores of each company with each sentiment package.
+
+-   For AAPL, the most accurate sentiment package was nrc with a matched score of .**556**
+
+-   For TSLA, the most accurate sentiment package was bing with a matched score of .**564**
+
+-   For JPM, the most accurate sentiment package was nrc with a matched score of .**560**
+
+The average matched score in this tibble is .**5457**, meaning that on average, the sentiment analysis of Reddit comments talking about the stocks listed above gives a **54.57%** chance on whether the positive or negative sentiment indicates stock performance on a given day. This probability is a little bit higher than the probability of a coin landing heads. 54.57% is not bad by any means, but why isn't it higher given all the analysis that was put into that figure. Well, it is mainly due to the lack of negative sentiment days in the data set. Here is a code that counts the number of positive and negative sentiment days for the AAPL nrc tibble.
+
+```{r}
+#| eval: TRUE
+#| echo: FALSE
+#| message: FALSE 
+#| warning: FALSE
+
+library(here)
+library(tidyverse)
+tibble <- read.csv(here("AAPL Dataset.csv"))
+
+tibble |>
+  count(pos_neg_sentiment) 
+
+tibble |>
+  count(inc_dec)
+```
+
+The sentiment function only picked out 13 out of the 250 trading days as having a negative sentiment. However, 110 out of the 250 trading days had a negative % change. This tendency towards a lack of negative trading days holds true for the other combinations of stock and sentiment combinations. So what does this mean? The Reddit comments failed to have enough days where the overall sentiment on the stock was negative, and as a result of such, the matched percentages are only around 50%. Therefore, the lack of negative sentiment days contributed to the underwhelming average matched score. This situation is one of the many practical issues with this study. To visualize this, the graph below plots the cumulative sum of the positive/negative sentiments and the cumulative sum of the stock returns over time.
+
+![](Demonstration%20Graph.png){fig-align="center"}
+
+The sentiment cumulative sum of the AAPL nrc tibble goes all the way to 200, while the return cumulative sum only goes until about 27-28. This graph shows that there were not a lot of negative sentiment days represented in the dataset, and if there were more negative sentiment days represented, then the two lines would be a lot closer to each other.
+
+# Complications + Further Research
+
+## Data Issues
+
+-   The sentiment packages are good, but they do not contain positive/negative sentiments of specific financial jargon.
+
+    -   For example, bull (indicating a positive) and bear (indicating a negative) are not actual sentiments in the nrc, bing, or AFINN packages.
+
+-   Reddit is not the best source to extract stock opinions from. The site is mainly comprised of retail investors who not have the access or resources to do the proper due diligence on specific company metrics.
+
+    -   In simple terms, the people posting on Reddit are either not credible or not as informed.
+
+-   The acronyms of the stock ticker symbols may pick up some comments that have nothing to do with the stock which might skew the data.
+
+    -   \$AAPL is a stock, but AAPL might be the American Association for Physician Leadership or the American Academy of Psychiatry and the Law
+
+## Interpretation Issues
+
+-   The matched column is a collection of 1's and 0's to check whether the sentiment matches the return outcome. If you were to randomly assign 1's and 0's to the pos_neg_sentiment and inc_dec variables over the trading days, you might get a better matched score purely based on coincidence.
+
+-   Because of the binary nature of the variables, its hard to interpret the matched score to be indicative of the sentiment accurately predicting stock outcomes.
+
+-   There are no regressions in this project, and even if there were, it would be hard to establish a causal relationship between online sentiment and trading outcomes due to the sheer amount of factors that go into the price of a financial asset.
+
+## Further Research
+
+-   The methodology in this project can help with further projects down the line to try to answer the same overarching research question.
+
+-   However, if I were to do this again, I would use/compile different datasets...
+
+    -   Instead of Reddit, I would use equity reports or quarterly conference call reports to web scrape text from.
+
+    -   I would build my own financial sentiment package such that the sentiments can actually capture what people's beliefs are about the stock.
+
+    -   I would run an event study to determine whether a positive/negative conference call impacts stock performance.
+
+## Final Remarks
+
+Did sentiment analysis accurately predict stock performance? In this case, only to a limited extent, but with the right datasets, I believe that the methodology utilized in this paper can make a really good argument that online sentiment can predict stock outcomes. Throughout this final project process, I learned a lot about web scraping and data wrangling, and I hope I can utilize the skills learned in this class to use in other finance projects and/or special interest projects in the future. Thank you for reading this project, and I look forward to hearing what all the other students did in the class.
+
+\~ Rocco Peri
